@@ -1,0 +1,24 @@
+# config for CHIP calling
+
+outdir: "chip"
+whitelist_dir: "input/chip/whitelist"   # latest file per pattern is used
+
+# seq filter
+min_dp: 50
+min_alt_depth: 5
+min_vaf: 0.02             # strict >
+require_orientation: true 
+
+# artifact
+min_carriers: 7           # recurrent_flag: >= this many carriers
+p_batch: 0.05             # unused: gray sample_qc has no batch
+p_age: 0.10               # unused: no covariates
+exempt_genes: [DNMT3A]
+
+# caller specific
+callers:
+  mutect2_no_pon:
+    input: "mutect2/all_samples.mutect2.no_pon.vep.csv"
+  vardict:
+    input: "vardict/all_samples.vardict.vep.csv"
+    require_orientation: false 
