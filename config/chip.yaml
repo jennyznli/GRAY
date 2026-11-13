@@ -18,7 +18,9 @@ exempt_genes: [DNMT3A]
 # caller specific
 callers:
   mutect2_no_pon:
-    input: "mutect2/all_samples.mutect2.no_pon.vep.csv"
+    input: "mutect2/all_samples.mutect2.no_pon.vep.basic_filtered.csv"   # or the raw vep csv
+    samples_from: "mutect2/all_samples.mutect2.no_pon.vep.csv"          # sample N; optional
   vardict:
-    input: "vardict/all_samples.vardict.vep.csv"
+    input: "vardict/all_samples.vardict.vep.basic_filtered.csv"
+    samples_from: "vardict/all_samples.vardict.vep.csv"
     require_orientation: false 

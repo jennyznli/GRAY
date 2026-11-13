@@ -1,7 +1,10 @@
 """
 Split a gray cohort VEP csv into the calls / sites / sample_qc inputs of the CHIP scripts (copied from 00-pmbb).
 
-    python scripts/chip/chip_example_prep.py -i all_samples.mutect2.no_pon.vep.csv -o OUTDIR [--min-dp 20 --min-ad 3]
+    python scripts/chip/chip_example_prep.py -i PREFIX.basic_filtered.csv -o OUTDIR [--samples-from PREFIX.csv]
+
+-i: raw vep csv or basic_filter.py output (its row_id / n_carriers / sample_freq cols are dropped).
+--samples-from: raw vep csv for the sample list, so samples w/ no basic-passed calls still count.
 
 OUTDIR/calls.csv.gz   Sample.ID, variant_id, FILTER, SOMQC (somatic_flags.py rules, alt-only orientation), Sample.*
 OUTDIR/sites.csv      one annotation row per ID x Feature.Accession (FILTER = '.')
@@ -12,6 +15,7 @@ import gzip
 import argparse
 from pathlib import Path
 
+DROP_COLS = {'row_id', 'n_carriers', 'sample_freq'}  # basic_filter.py extras
 SAMPLE_COLS = ['Sample.Zyg', 'Sample.Depth', 'Sample.AltDepth', 'Sample.AltFrac', 'Sample.AF',
                'Sample.GQ', 'Sample.FAD', 'Sample.F1R2', 'Sample.F2R1']
 
@@ -34,6 +38,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('-i', '--input', required=True)
     p.add_argument('-o', '--outdir', required=True)
+    p.add_argument('--samples-from', default='')
     p.add_argument('--min-dp', type=int, default=20)
     p.add_argument('--min-ad', type=int, default=3)
     a = p.parse_args()
@@ -43,7 +48,7 @@ def main():
     sites, calls, samples = {}, {}, set()
     with open(a.input, newline='') as fh:
         r = csv.DictReader(fh)
-        site_cols = [c for c in r.fieldnames if c not in SAMPLE_COLS and c != 'Sample.ID']
+        site_cols = [c for c in r.fieldnames if c not in SAMPLE_COLS and c not in DROP_COLS and c != 'Sample.ID']
         for x in r:
             s, vid = x['Sample.ID'], x['ID']
             samples.add(s)
@@ -57,6 +62,10 @@ def main():
                                       ('orientation', o1 is None or o2 is None or o1 < 1 or o2 < 1)] if bad]
             calls[(s, vid)] = {'Sample.ID': s, 'variant_id': vid, 'FILTER': x['FILTER'],
                                'SOMQC': ';'.join(flags) or 'PASS'} | {c: x.get(c, '') for c in SAMPLE_COLS}
+
+    if a.samples_from:
+        with open(a.samples_from, newline='') as fh:
+            samples |= {x['Sample.ID'] for x in csv.DictReader(fh)}
 
     with gzip.open(out / 'calls.csv.gz', 'wt', newline='') as fo:
         w = csv.DictWriter(fo, fieldnames=['Sample.ID', 'variant_id', 'FILTER', 'SOMQC'] + SAMPLE_COLS)

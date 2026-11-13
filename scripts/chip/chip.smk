@@ -4,7 +4,8 @@ CHIP example on gray cohort VEP csvs (scripts copied from 00-pmbb/somatic).
     snakemake -s scripts/chip/chip.smk --configfile config/chip.yaml -j 2
 
 Per caller -> {outdir}/{caller}/:
-  chip_prep        chip_example_prep.py: calls.csv.gz + sites.csv + sample_qc.csv (all PASS)
+  chip_prep        chip_example_prep.py: calls.csv.gz + sites.csv + sample_qc.csv (all PASS);
+                   input = basic_filtered.csv (or raw vep csv), samples_from = raw csv for the sample N
   chip_seq_filter  chip_seq_filtering.py: CH genes, MANE, orientation, DP / alt depth / VAF
   chip_whitelist   chip_whitelist.py: wl_* flags
   chip_recurrence  chip_recurrence.py: carriers per variant (whitelist + manual review only)
@@ -29,6 +30,7 @@ rule chip_all:
 rule chip_prep:
     input:
         csv=lambda w: config["callers"][w.caller]["input"],
+        samples=lambda w: config["callers"][w.caller].get("samples_from") or [],
         script=f"{S}/chip_example_prep.py",
     output:
         calls=f"{OUT}/{{caller}}/calls.csv.gz",
@@ -36,8 +38,10 @@ rule chip_prep:
         qc=f"{OUT}/{{caller}}/sample_qc.csv",
     log:
         f"{OUT}/{{caller}}/logs/chip_prep.log",
+    params:
+        samples=lambda w, input: f"--samples-from {input.samples}" if input.samples else "",
     shell:
-        "python {input.script} -i {input.csv} -o {OUT}/{wildcards.caller} > {log} 2>&1"
+        "python {input.script} -i {input.csv} {params.samples} -o {OUT}/{wildcards.caller} > {log} 2>&1"
 
 
 rule chip_seq_filter:
