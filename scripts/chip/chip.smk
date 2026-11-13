@@ -52,7 +52,7 @@ rule chip_seq_filter:
         f"{OUT}/{{caller}}/logs/chip_seq_filter.log",
     shell:
         r"""
-        python {input.script} --calls {input.calls} --sites {input.sites} --chrom all \
+        python {input.script} --calls {input.calls} --sites {input.sites} \
             --whitelist-dir {config[whitelist_dir]} --min-dp {config[min_dp]} \
             --min-alt-depth {config[min_alt_depth]} --min-vaf {config[min_vaf]} \
             -o {output.csv} --stats {output.stats} > {log} 2>&1
