@@ -106,9 +106,12 @@ rule chip_artifact:
         f"{OUT}/{{caller}}/logs/chip_artifact.log",
     params:
         exempt=",".join(config.get("exempt_genes") or []),
+        batch_test=config.get("batch_test", True),
+        age_test=config.get("age_test", True),
     shell:
         r"""
         Rscript {input.script} --calls {input.calls} --recurrence {input.rec} --sample-qc {input.qc} \
-            --p-age {config[p_age]} --p-batch {config[p_batch]} --exempt "{params.exempt}" \
+            --p-age {config[p_age]} --p-batch {config[p_batch]} \
+            --batch-test {params.batch_test} --age-test {params.age_test} --exempt "{params.exempt}" \
             --out-variants {output.variants} --out-calls {output.calls} > {log} 2>&1
         """

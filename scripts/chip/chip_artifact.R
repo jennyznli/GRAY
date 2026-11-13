@@ -4,6 +4,7 @@
 #   2. batch_flag       recurrent & BH-adjusted Fisher (carrier x batch) p < p_batch
 #   3. age_flag         recurrent & not exempt & NOT (OR > 1 & p < p_age); needs --covariates
 # review = recurrent_flag | wl_manualreview
+# --batch-test / --age-test FALSE turn 2 / 3 off (flags -> FALSE)
 # ========================
 suppressPackageStartupMessages({
     library(dplyr)
@@ -20,6 +21,8 @@ arg  <- function(k, default = NULL) if (!is.null(opt[[k]]) && opt[[k]] != "") op
 BATCH_SIG <- as.numeric(arg("p-batch", "0.05"))
 AGE_SIG   <- as.numeric(arg("p-age", "0.10"))
 EXEMPT    <- strsplit(arg("exempt", ""), ",")[[1]]
+BATCH_TEST <- as.logical(arg("batch-test", "TRUE"))
+AGE_TEST   <- as.logical(arg("age-test", "TRUE"))
 
 # ========================
 # READ IN DATA
@@ -44,7 +47,9 @@ length(recurrent_var)
 # 2. BATCH ENRICHMENT
 # ========================
 batch_res <- tibble(variant_id = character(), p_batch = numeric())
-if ("batch" %in% names(qc) && n_distinct(qc$batch) > 1) {
+if (!BATCH_TEST) {
+    cat("batch test off\n")
+} else if ("batch" %in% names(qc) && n_distinct(qc$batch) > 1) {
     batch_res <- tibble(variant_id = recurrent_var) %>%
         mutate(p_batch = sapply(variant_id, function(v) {
             tab <- table(qc$sample_id %in% carriers$Sample.ID[carriers$variant_id == v], qc$batch)
@@ -85,7 +90,9 @@ test_age_association <- function(v, cov) {
 
 age_res <- tibble(variant_id = character(), OR = numeric(), CI_lo = numeric(), CI_hi = numeric(),
                   p_age = numeric(), separation = logical())
-if (!is.null(arg("covariates"))) {
+if (!AGE_TEST) {
+    cat("age test off\n")
+} else if (!is.null(arg("covariates"))) {
     cov <- read_tsv(arg("covariates"), col_types = cols(sample_id = col_character())) %>%
         filter(sample_id %in% qc$sample_id)
     stopifnot("age" %in% names(cov))
