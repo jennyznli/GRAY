@@ -6,12 +6,16 @@ whitelist_dir: "input/chip/whitelist"   # latest file per pattern is used
 # seq filter
 min_dp: 100
 min_alt_depth: 5
-min_vaf: 0.02            
+min_vaf: 0.02
+drop_cols: [row_id, n_carriers, sample_freq]   # basic_filter.py extras
 
 # artifact
 min_carriers: 7           # recurrent_flag: >= this many carriers
 batch_test: false         # off for now
 age_test: false           # off for now
+germline_test: true
+p_binom: 0.05             # germline_binom: AltDepth/Depth vs 0.5, p >= this
+gnomad_max_af: 0.005      # germline_gnomad: MAX_AF > this
 p_batch: 0.05
 p_age: 0.10
 exempt_genes: [DNMT3A]

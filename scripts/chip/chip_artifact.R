@@ -3,6 +3,8 @@
 #   1. recurrent_flag   n QC-pass carriers >= min_carriers
 #   2. batch_flag       recurrent & BH-adjusted Fisher (carrier x batch) p < p_batch
 #   3. age_flag         recurrent & not exempt & NOT (OR > 1 & p < p_age); needs --covariates
+#   4. germline_flag    candidate call w/ any of: binomial AltDepth/Depth vs 0.5 p >= p_binom,
+#                       gnomAD max AF > gnomad_max_af, Mutect2 FILTER 'germline'
 # ========================
 suppressPackageStartupMessages({
     library(dplyr)
@@ -21,6 +23,9 @@ AGE_SIG   <- as.numeric(arg("p-age", "0.10"))
 EXEMPT    <- strsplit(arg("exempt", ""), ",")[[1]]
 BATCH_TEST <- as.logical(arg("batch-test", "TRUE"))
 AGE_TEST   <- as.logical(arg("age-test", "TRUE"))
+GERMLINE_TEST <- as.logical(arg("germline-test", "TRUE"))
+P_BINOM       <- as.numeric(arg("p-binom", "0.05"))
+GNOMAD_MAX    <- as.numeric(arg("gnomad-max-af", "0.005"))
 
 # ========================
 # READ IN DATA
@@ -104,11 +109,40 @@ if (!AGE_TEST) {
 age_res <- age_res %>% mutate(age_flag = !(!is.na(OR) & OR > 1 & p_age < AGE_SIG))
 
 # ========================
+# 4. GERMLINE (per candidate call; any one -> germline_flag)
+# ========================
+cand <- calls$wl_whitelist == "TRUE" | calls$wl_manualreview == "TRUE"
+calls <- calls %>% mutate(germline_binom_p = NA_real_, germline_binom = NA, germline_gnomad = NA,
+                          germline_m2 = NA, germline_flag = NA)
+if (!GERMLINE_TEST) {
+    cat("germline test off\n")
+} else if (any(cand)) {
+    ad <- round(as.numeric(calls$Sample.AltDepth[cand]))
+    dp <- round(as.numeric(calls$Sample.Depth[cand]))
+    calls$germline_binom_p[cand] <- vapply(seq_along(ad), function(i) binom.test(ad[i], dp[i], 0.5)$p.value, numeric(1))
+    calls$germline_binom[cand]   <- calls$germline_binom_p[cand] >= P_BINOM
+
+    af_col <- intersect(c("MAX_AF", "gnomAD.MAX_AF"), names(calls))[1]
+    if (is.na(af_col)) cat("no MAX_AF / gnomAD.MAX_AF column -- gnomAD check FALSE\n")
+    af <- if (is.na(af_col)) rep(NA_real_, sum(cand)) else suppressWarnings(as.numeric(calls[[af_col]][cand]))
+    calls$germline_gnomad[cand] <- !is.na(af) & af > GNOMAD_MAX
+
+    calls$germline_m2[cand]   <- grepl("(^|;)germline(;|$)", calls$FILTER[cand])
+    calls$germline_flag[cand] <- calls$germline_binom[cand] | calls$germline_gnomad[cand] | calls$germline_m2[cand]
+}
+germ_var <- calls %>%
+    filter(cand, germline_flag %in% TRUE, Sample.ID %in% qc$sample_id) %>%
+    distinct(variant_id = ID, Sample.ID) %>%
+    count(variant_id, name = "n_germline")
+
+# ========================
 # JOIN BACK - ALL FLAGS
 # ========================
 out <- rec %>%
     left_join(batch_res, by = "variant_id") %>%
     left_join(age_res, by = "variant_id") %>%
+    left_join(germ_var, by = "variant_id") %>%
+    mutate(n_germline = if (GERMLINE_TEST) coalesce(n_germline, 0L) else NA_integer_) %>%
     mutate(across(c(batch_flag, age_flag), ~ ifelse(is.na(.x), FALSE, .x)),
            review = recurrent_flag | wl_manualreview) %>%
     arrange(desc(review), desc(n_carriers))
@@ -123,6 +157,10 @@ flags <- c("recurrent_flag", "batch_flag", "age_flag", "review")
 print(tibble(flag = flags,
              n_variants_flagged = sapply(flags, function(f) sum(out[[f]])),
              n_rows_flagged     = sapply(flags, function(f) sum(calls_out[[f]], na.rm = TRUE))))
+cat(sprintf("germline_flag: %d candidate rows (binom %d, gnomAD %d, Mutect2 %d); %d variants w/ >= 1 germline carrier\n",
+            sum(calls_out$germline_flag, na.rm = TRUE), sum(calls_out$germline_binom, na.rm = TRUE),
+            sum(calls_out$germline_gnomad, na.rm = TRUE), sum(calls_out$germline_m2, na.rm = TRUE),
+            sum(out$n_germline > 0, na.rm = TRUE)))
 
 write_csv(out, arg("out-variants"), na = ".")
 write_csv(calls_out, arg("out-calls"), na = ".")

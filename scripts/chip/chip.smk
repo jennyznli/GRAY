@@ -4,55 +4,42 @@ CHIP example on gray cohort VEP csvs (scripts copied from 00-pmbb/somatic).
     snakemake -s scripts/chip/chip.smk --configfile config/chip.yaml -j 2
 
 Per caller -> {outdir}/{caller}/:
-  chip_prep        chip_prep.py: calls.csv.gz + sites.csv + sample_qc.csv (all PASS);
+  chip_seq_filter  chip_seq_filtering.py: CH genes, MANE, DP / alt depth / VAF; + sample_qc.csv (all PASS)
                    input = basic_filtered.csv (or raw vep csv), samples_from = raw csv for the sample N
-  chip_seq_filter  chip_seq_filtering.py: CH genes, MANE, DP / alt depth / VAF
   chip_whitelist   chip_whitelist.py: wl_* flags
   chip_recurrence  chip_recurrence.py: carriers per variant (whitelist + manual review only)
-  chip_artifact    chip_artifact.R: review table (no batch / age test on gray)
+  chip_artifact    chip_artifact.R: batch / age / germline flags -> review table
 """
 
 OUT = config["outdir"]
 S = "scripts/chip"
 
 
-localrules: chip_all, chip_prep, chip_seq_filter, chip_whitelist, chip_recurrence, chip_artifact
+localrules: chip_all, chip_seq_filter, chip_whitelist, chip_recurrence, chip_artifact
 
 rule chip_all:
     input:
         expand(f"{OUT}/{{caller}}/chip_artifact.csv", caller=config["callers"]),
 
 
-rule chip_prep:
+rule chip_seq_filter:
     input:
         csv=lambda w: config["callers"][w.caller]["input"],
         samples=lambda w: config["callers"][w.caller].get("samples_from") or [],
-        script=f"{S}/chip_prep.py",
-    output:
-        calls=f"{OUT}/{{caller}}/calls.csv.gz",
-        sites=f"{OUT}/{{caller}}/sites.csv",
-        qc=f"{OUT}/{{caller}}/sample_qc.csv",
-    log:
-        f"{OUT}/{{caller}}/logs/chip_prep.log",
-    params:
-        samples=lambda w, input: f"--samples-from {input.samples}" if input.samples else "",
-    shell:
-        "python {input.script} -i {input.csv} {params.samples} -o {OUT}/{wildcards.caller} > {log} 2>&1"
-
-
-rule chip_seq_filter:
-    input:
-        calls=rules.chip_prep.output.calls,
-        sites=rules.chip_prep.output.sites,
         script=f"{S}/chip_seq_filtering.py",
     output:
         csv=f"{OUT}/{{caller}}/chip_seq.csv",
         stats=f"{OUT}/{{caller}}/chip_seq_stats.tsv",
+        qc=f"{OUT}/{{caller}}/sample_qc.csv",
     log:
         f"{OUT}/{{caller}}/logs/chip_seq_filter.log",
+    params:
+        samples=lambda w, input: f"--samples-from {input.samples}" if input.samples else "",
+        drop=",".join(config.get("drop_cols") or []),
     shell:
         r"""
-        python {input.script} --calls {input.calls} --sites {input.sites} \
+        python {input.script} -i {input.csv} {params.samples} --sample-qc-out {output.qc} \
+            --drop-cols "{params.drop}" \
             --whitelist-dir {config[whitelist_dir]} --min-dp {config[min_dp]} \
             --min-alt-depth {config[min_alt_depth]} --min-vaf {config[min_vaf]} \
             -o {output.csv} --stats {output.stats} > {log} 2>&1
@@ -74,7 +61,7 @@ rule chip_whitelist:
 rule chip_recurrence:
     input:
         calls=rules.chip_whitelist.output[0],
-        qc=rules.chip_prep.output.qc,
+        qc=rules.chip_seq_filter.output.qc,
         script=f"{S}/chip_recurrence.py",
     output:
         f"{OUT}/{{caller}}/chip_recurrence.csv",
@@ -91,7 +78,7 @@ rule chip_artifact:
     input:
         calls=rules.chip_whitelist.output[0],
         rec=rules.chip_recurrence.output[0],
-        qc=rules.chip_prep.output.qc,
+        qc=rules.chip_seq_filter.output.qc,
         script=f"{S}/chip_artifact.R",
     output:
         variants=f"{OUT}/{{caller}}/chip_artifact.csv",
@@ -102,10 +89,13 @@ rule chip_artifact:
         exempt=",".join(config.get("exempt_genes") or []),
         batch_test=config.get("batch_test", True),
         age_test=config.get("age_test", True),
+        germline_test=config.get("germline_test", True),
     shell:
         r"""
         Rscript {input.script} --calls {input.calls} --recurrence {input.rec} --sample-qc {input.qc} \
             --p-age {config[p_age]} --p-batch {config[p_batch]} \
-            --batch-test {params.batch_test} --age-test {params.age_test} --exempt "{params.exempt}" \
+            --batch-test {params.batch_test} --age-test {params.age_test} \
+            --germline-test {params.germline_test} --p-binom {config[p_binom]} --gnomad-max-af {config[gnomad_max_af]} \
+            --exempt "{params.exempt}" \
             --out-variants {output.variants} --out-calls {output.calls} > {log} 2>&1
         """

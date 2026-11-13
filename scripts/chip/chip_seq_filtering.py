@@ -1,5 +1,5 @@
 """
-CHIP sequence-level filtering, join chip_prep.py calls to their VEP annotation and apply CH specific filters. 
+CHIP sequence-level filtering on a cohort VEP csv (vep_vcf_parser.py cohort mode: annotation + Sample.* per row).
 
 Steps:
   01  Gene in Full_CHIP_gene_list_*.txt, Bio.type == protein_coding,
@@ -9,15 +9,13 @@ Steps:
   04  Sample.AltDepth >= --min-alt-depth
   05  Sample.AltFrac > --min-vaf (strict)
 
-Output: one row per sample x variant x CH gene passing all steps. Columns = Sample.ID, the annotate csv's
-columns (its '.' FILTER replaced by the sample's FILTER), then the Sample.* columns.
-
---stats: tsv  step  n   (input = all calls; then rows passing each step)
+Output: input rows passing all steps (minus --drop-cols).
+--stats: tsv  step  n   (input = all rows; then rows passing each step)
+--sample-qc-out: sample_id,sample_flags with every sample PASS (input + --samples-from samples)
 """
 import os
 import sys
 import csv
-import gzip
 import argparse
 from collections import Counter
 
@@ -25,8 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chip_whitelist import _latest, _rows  # noqa: E402
 
 STEPS = ['s01_gene_biotype_values', 's02_mane', 's03_dp', 's04_alt_depth', 's05_vaf']
-SAMPLE_COLS = ['Sample.Depth', 'Sample.AltDepth', 'Sample.AltFrac', 'Sample.AF',
-               'Sample.F1R2', 'Sample.F2R1']
+VALUE_COLS = ('Sample.AltFrac', 'Sample.Depth', 'Sample.AltDepth')
 MISSING = ('', '.', 'NA', '-1')
 
 
@@ -43,10 +40,12 @@ def filled(x):
 
 def main(argv=None):
     p = argparse.ArgumentParser()
-    p.add_argument('--calls', required=True, help='chip_prep.py calls.csv.gz')
-    p.add_argument('--sites', required=True, help='chip_prep.py sites.csv')
+    p.add_argument('-i', '--input', required=True, help='cohort vep csv')
     p.add_argument('-o', '--output', required=True)
     p.add_argument('--stats', required=True)
+    p.add_argument('--sample-qc-out', required=True)
+    p.add_argument('--samples-from', default='', help='csv w/ Sample.ID; adds samples w/ no rows in --input')
+    p.add_argument('--drop-cols', default='', help='comma-separated input cols left out of --output')
     p.add_argument('--whitelist-dir', default='whitelist')
     p.add_argument('--min-dp', type=int, default=20)
     p.add_argument('--min-alt-depth', type=int, default=3)
@@ -55,55 +54,43 @@ def main(argv=None):
 
     gene_file = _latest(a.whitelist_dir, 'Full_CHIP_gene_list_*.txt')
     genes = {r['Gene'] for r in _rows(gene_file)}
+    drop = set(filter(None, a.drop_cols.split(',')))
 
-    # CH-gene annotation rows only: variant_id -> [(row, biotype_ok, mane_ok), ...]
-    sites = {}
-    with open(a.sites, newline='') as fs:
-        reader = csv.DictReader(fs)
-        site_cols = [c for c in reader.fieldnames if c != 'FILTER']
-        for r in reader:
-            if r['Gene'] in genes:
-                sites.setdefault(r['ID'], []).append(
-                    (r, r['Bio.type'] == 'protein_coding',
-                     filled(r['MANE.Select']) or filled(r['MANE.PlusClinical'])))
-
-    out_cols = ['Sample.ID'] + site_cols[:]
-    # put the sample's FILTER where the parser had it
-    i_id = out_cols.index('ID')
-    out_cols.insert(i_id + 1, 'FILTER')
-    out_cols += SAMPLE_COLS
-
-    n = Counter()
-    with gzip.open(a.calls, 'rt', newline='') as fc, open(a.output, 'w', newline='') as fo:
-        w = csv.DictWriter(fo, fieldnames=out_cols, extrasaction='ignore')
+    n, samples = Counter(), set()
+    with open(a.input, newline='') as fi, open(a.output, 'w', newline='') as fo:
+        r = csv.DictReader(fi)
+        w = csv.DictWriter(fo, fieldnames=[c for c in r.fieldnames if c not in drop], extrasaction='ignore')
         w.writeheader()
-        for c in csv.DictReader(fc):
+        for x in r:
             n['input'] += 1
-            for site, biotype_ok, mane_ok in sites.get(c['variant_id'], ()):
-                dp, ad, vaf = (to_float(c[k]) for k in ('Sample.Depth', 'Sample.AltDepth', 'Sample.AltFrac'))
-                ok = [biotype_ok and all(c[k].strip() not in MISSING for k in
-                                         ('Sample.AltFrac', 'Sample.Depth', 'Sample.AltDepth')),
-                      mane_ok,
-                      dp is not None and dp >= a.min_dp,
-                      ad is not None and ad >= a.min_alt_depth,
-                      vaf is not None and vaf > a.min_vaf]
-                n['in_gene'] += 1
-                cum = True
-                for step, s_ok in zip(STEPS, ok):
-                    cum = cum and s_ok
-                    n[step] += cum
-                if cum:
-                    row = site | {'Sample.ID': c['Sample.ID'], 'FILTER': c['FILTER']}
-                    row.update({k: c[k] for k in SAMPLE_COLS})
-                    w.writerow(row)
+            samples.add(x['Sample.ID'])
+            if x['Gene'] not in genes:
+                continue
+            n['in_gene'] += 1
+            dp, ad, vaf = (to_float(x[k]) for k in ('Sample.Depth', 'Sample.AltDepth', 'Sample.AltFrac'))
+            ok = [x['Bio.type'] == 'protein_coding' and all(x[k].strip() not in MISSING for k in VALUE_COLS),
+                  filled(x['MANE.Select']) or filled(x['MANE.PlusClinical']),
+                  dp is not None and dp >= a.min_dp,
+                  ad is not None and ad >= a.min_alt_depth,
+                  vaf is not None and vaf > a.min_vaf]
+            cum = True
+            for step, s_ok in zip(STEPS, ok):
+                cum = cum and s_ok
+                n[step] += cum
+            if cum:
+                w.writerow(x)
+
+    if a.samples_from:
+        with open(a.samples_from, newline='') as fh:
+            samples |= {x['Sample.ID'] for x in csv.DictReader(fh)}
+    with open(a.sample_qc_out, 'w') as fh:
+        fh.write('sample_id,sample_flags\n' + ''.join(f'{s},PASS\n' for s in sorted(samples)))
 
     order = ['input', 'in_gene'] + STEPS
     with open(a.stats, 'w') as fs:
-        fs.write('step\tn\n')
-        for k in order:
-            fs.write(f'{k}\t{n[k]}\n')
-    print(f'{a.calls}: ' + ', '.join(f'{k}={n[k]}' for k in order) + f' -> {a.output}')
-    print(f'min_dp={a.min_dp} min_alt_depth={a.min_alt_depth} min_vaf>{a.min_vaf}; '
+        fs.write('step\tn\n' + ''.join(f'{k}\t{n[k]}\n' for k in order))
+    print(f'{a.input}: ' + ', '.join(f'{k}={n[k]}' for k in order) + f' -> {a.output}')
+    print(f'{len(samples)} samples; min_dp={a.min_dp} min_alt_depth={a.min_alt_depth} min_vaf>{a.min_vaf}; '
           f'{len(genes)} genes in {gene_file}')
 
 
