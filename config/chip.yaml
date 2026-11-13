@@ -7,7 +7,6 @@ whitelist_dir: "input/chip/whitelist"   # latest file per pattern is used
 min_dp: 100
 min_alt_depth: 5
 min_vaf: 0.02            
-require_orientation: true 
 
 # artifact
 min_carriers: 7           # recurrent_flag: >= this many carriers

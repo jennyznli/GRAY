@@ -5,7 +5,6 @@ variant_id = CHROM_POS_REF_ALT
 Rows used:
   candidates   wl_whitelist or wl_manualreview are TRUE
   QC-pass      Sample.ID has sample_flags == PASS in --sample-qc (others counted only in n_carriers_all)
-
 """
 import csv
 import argparse

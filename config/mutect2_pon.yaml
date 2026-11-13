@@ -29,9 +29,6 @@ parameters:
   m2_extra_args: ""
   m2_extra_filtering_args: ""
 
-  # vardict
-  vardict_af_thr: 0.001
-
 oncokb:
   cache: "oncokb/cache.GRCh38.tsv"
   tumor_type: "BRCA"

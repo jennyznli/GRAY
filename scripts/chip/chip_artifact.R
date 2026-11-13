@@ -1,10 +1,8 @@
 # ========================
-# Artifact identification for CHIP variants (from 03-ch artifact.R + minad_age_association.R)
-#   1. recurrent_flag   n QC-pass carriers >= min_carriers (chip_recurrence.py)
+# Artifact identification for CHIP variants
+#   1. recurrent_flag   n QC-pass carriers >= min_carriers
 #   2. batch_flag       recurrent & BH-adjusted Fisher (carrier x batch) p < p_batch
 #   3. age_flag         recurrent & not exempt & NOT (OR > 1 & p < p_age); needs --covariates
-# review = recurrent_flag | wl_manualreview
-# --batch-test / --age-test FALSE turn 2 / 3 off (flags -> FALSE)
 # ========================
 suppressPackageStartupMessages({
     library(dplyr)

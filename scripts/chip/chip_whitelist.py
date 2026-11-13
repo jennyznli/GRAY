@@ -1,14 +1,12 @@
 """
 CHIP whitelist annotator for VEP-parsed rows 
 
-    python scripts/chip_whitelist.py -i in.csv -o out.csv [--whitelist-dir whitelist]
-
 Whitelist:
-  Full_CHIP_gene_list_*.txt        Gene / ReportedMut / Accession   (gene universe + transcript)
-  CHIP_missense_vars_cv_*.txt      Gene / AAChange                   (exact 1-letter protein change)
-  CHIP_nonsense_FS_vars_cv_*.txt   Gene                              (nonsense / frameshift anywhere)
-  CHIP_splice_vars_cv_*.txt        Gene                              (canonical splice donor/acceptor anywhere)
-  chip_whitelist_rules_*.tsv       exceptions + manual-review classes 
+  Full_CHIP_gene_list_*.txt
+  CHIP_missense_vars_cv_*.txt 
+  CHIP_nonsense_FS_vars_cv_*.txt 
+  CHIP_splice_vars_cv_*.txt 
+  chip_whitelist_rules_*.tsv 
 
 Added columns:
   wl_whitelist     meets any whitelist criteria

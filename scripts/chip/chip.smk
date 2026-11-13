@@ -4,9 +4,9 @@ CHIP example on gray cohort VEP csvs (scripts copied from 00-pmbb/somatic).
     snakemake -s scripts/chip/chip.smk --configfile config/chip.yaml -j 2
 
 Per caller -> {outdir}/{caller}/:
-  chip_prep        chip_example_prep.py: calls.csv.gz + sites.csv + sample_qc.csv (all PASS);
+  chip_prep        chip_prep.py: calls.csv.gz + sites.csv + sample_qc.csv (all PASS);
                    input = basic_filtered.csv (or raw vep csv), samples_from = raw csv for the sample N
-  chip_seq_filter  chip_seq_filtering.py: CH genes, MANE, orientation, DP / alt depth / VAF
+  chip_seq_filter  chip_seq_filtering.py: CH genes, MANE, DP / alt depth / VAF
   chip_whitelist   chip_whitelist.py: wl_* flags
   chip_recurrence  chip_recurrence.py: carriers per variant (whitelist + manual review only)
   chip_artifact    chip_artifact.R: review table (no batch / age test on gray)
@@ -14,10 +14,6 @@ Per caller -> {outdir}/{caller}/:
 
 OUT = config["outdir"]
 S = "scripts/chip"
-
-
-def opt(c, k):
-    return config["callers"][c].get(k, config[k])
 
 
 localrules: chip_all, chip_prep, chip_seq_filter, chip_whitelist, chip_recurrence, chip_artifact
@@ -31,7 +27,7 @@ rule chip_prep:
     input:
         csv=lambda w: config["callers"][w.caller]["input"],
         samples=lambda w: config["callers"][w.caller].get("samples_from") or [],
-        script=f"{S}/chip_example_prep.py",
+        script=f"{S}/chip_prep.py",
     output:
         calls=f"{OUT}/{{caller}}/calls.csv.gz",
         sites=f"{OUT}/{{caller}}/sites.csv",
@@ -54,13 +50,11 @@ rule chip_seq_filter:
         stats=f"{OUT}/{{caller}}/chip_seq_stats.tsv",
     log:
         f"{OUT}/{{caller}}/logs/chip_seq_filter.log",
-    params:
-        orient=lambda w: "" if opt(w.caller, "require_orientation") else "--no-orientation",
     shell:
         r"""
         python {input.script} --calls {input.calls} --sites {input.sites} --chrom all \
             --whitelist-dir {config[whitelist_dir]} --min-dp {config[min_dp]} \
-            --min-alt-depth {config[min_alt_depth]} --min-vaf {config[min_vaf]} {params.orient} \
+            --min-alt-depth {config[min_alt_depth]} --min-vaf {config[min_vaf]} \
             -o {output.csv} --stats {output.stats} > {log} 2>&1
         """
 
