@@ -1,9 +1,9 @@
 """
 Caller-agnostic post-calling annotation for the tumor cohort. 
 
-    snakemake -s scripts/annotate.smk --config caller=mutect2
-    snakemake -s scripts/annotate.smk --config caller=vardict
-    snakemake -s scripts/annotate.smk --config caller=vardict outdir=/some/other/path
+    snakemake -s rules/annotate.smk --config caller=mutect2
+    snakemake -s rules/annotate.smk --config caller=vardict
+    snakemake -s rules/annotate.smk --config caller=vardict outdir=/some/other/path
 
 """
 

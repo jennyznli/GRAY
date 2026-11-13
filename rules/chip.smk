@@ -1,7 +1,7 @@
 """
 CHIP example on gray cohort VEP csvs (scripts copied from 00-pmbb/somatic).
 
-    snakemake -s scripts/chip/chip.smk --configfile config/chip.yaml -j 2
+    snakemake -s rules/chip.smk --configfile config/chip.yaml -j 2
 
 Per caller -> {outdir}/{caller}/:
   chip_seq_filter  chip_seq_filtering.py: CH genes, MANE, DP / alt depth / VAF; + sample_qc.csv (all PASS)
