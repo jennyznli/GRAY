@@ -1,0 +1,69 @@
+# gray pipeline 
+project:
+  # alignment
+  fastq_config: "config/fastq.yml"
+  sample_list: "input/sample.list"
+  bam_table: "input/bam.table"
+
+reference:
+  fasta: "/home/jennyzli/resources/Genomes/Human/hg38/fa/Homo_sapiens_assembly38.fasta"
+  fai: "/home/jennyzli/resources/Genomes/Human/hg38/fa/Homo_sapiens_assembly38.fasta.fai"
+  dict: "/home/jennyzli/resources/Genomes/Human/hg38/fa/Homo_sapiens_assembly38.dict"
+
+resources:
+  # alignment
+  qc_targets_bed: "/home/jennyzli/jenny/29-gray/bed/IDT-Target-HYB-PreCancer.hg38.targets.merged.bed"
+  target_interval_list: "/home/jennyzli/jenny/29-gray/bed/IDT-Target-HYB-PreCancer.hg38.targets.merged.interval_list"
+  bait_interval_list: "/home/jennyzli/jenny/29-gray/bed/IDT-Target-HYB-PreCancer.hg38.probes.merged.interval_list"
+  bqsr_intervals: "/home/jennyzli/jenny/29-gray/bed/IDT-Target-HYB-PreCancer.hg38.targets.slop50.merged.bed"
+  bqsr_known_sites:
+    - "/project/knathans_shared/resources/Genomes/Human/hg38/beta/Homo_sapiens_assembly38.known_indels.vcf.gz"
+    - "/project/knathans_shared/resources/Genomes/Human/hg38/beta/Homo_sapiens_assembly38.dbsnp.vcf.gz"
+    - "/project/knathans_shared/resources/Genomes/Human/hg38/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"
+  # calling + filtering
+  targets_bed: "/home/jennyzli/jenny/29-gray/bed/IDT-Target-HYB-PreCancer.hg38.targets.slop50.merged.bed"
+  gnomad: "/home/jennyzli/software/mutect2/af-only-gnomad.hg38.vcf.gz"                            # known germline variants
+  variants_for_contamination: "/home/jennyzli/software/mutect2/small_exac_common_3.hg38.vcf.gz"   # common variants w/ AFs
+  masked_intervals: ""
+
+samples:
+  cases_tsv: "input/gray_sample_ids_bams.tsv"     # sample_id<TAB>cram_or_bam_path
+
+# mutect2
+pon:
+  name: "mutect2"
+  use_pon: false
+
+analysis:
+  label: "no_pon"
+
+parameters:
+  m2_extra_args: ""
+  m2_extra_filtering_args: ""
+  vardict_af_thr: 0.001
+
+# annotation
+oncokb:
+  cache: "oncokb/cache.GRCh38.tsv"
+  tumor_type: "BRCA"
+
+# somatic filtering (rules/filter.smk)
+filter:
+  outdir: "filter"
+  genes: "input/IDT-Target-HYB-PreCancer.genes.txt"   # one per line; "" = no restriction
+  min_dp: 100
+  max_len: 100              # REF and ALT <= this many bp
+  min_ad_snv: 5             # pass_minad
+  min_ad_indel: 10
+  strand_min: 0.1           # pass_strand: alt fwd fraction within [strand_min, 1 - strand_min]
+  callers:                  # cohort vep csv per caller
+    mutect2_no_pon: "mutect2/all_samples.mutect2.no_pon.vep.csv"
+    vardict: "vardict/all_samples.vardict.vep.csv"
+  merge:                    # which of the callers above is which (drop one for a single caller)
+    mutect2: mutect2_no_pon
+    vardict: vardict
+  both_callers: true        # keep only calls made by both callers 
+  mutect2_ignore_tags: [germline, clustered_events, multiallelic]   # Mutect2 FILTER tags that don't fail a call
+  reports: "reports/filter"                 # stats tsvs
+  whitelist_dir: "whitelist"               
+  hotspots: "whitelist/20261116_hotspot_rules.tsv"   

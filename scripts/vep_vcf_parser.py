@@ -6,6 +6,7 @@ from collections import defaultdict
 import re
 
 GT_MAPPING={'0/0':'HOM_REF','0/1':'HET_ALT','1/0':'HET_ALT','1/1':'HOM_ALT'}
+# for tumor/normal path 
 ZYG_MAPPING={'0;0':'HOM_REF','0;1':'HET_ALT','1;0':'HET_ALT','1;1':'HOM_ALT'}
 GNOMAD_CACHE_POPS={
     'gnomADe':['AFR','AMR','ASJ','EAS','FIN','MID','NFE','REMAINING','SAS'],
@@ -18,6 +19,8 @@ GNOMAD_CACHE_FIELDS=[
 SPLICEAI_METRICS=['AG','AL','DG','DL']
 PREDICTORS=[('SIFT','SIFT'),('PolyPhen','PolyPhen'),('REVEL','REVEL')]
 CALLER_TOOLS=['LANCET','MUTECT2','STRELKA2','VARDICT','VARSCAN2']
+# extra FORMAT columns (cohort / single mode)
+FORMAT_COLS=['Sample.F1R2','Sample.F2R1','Sample.AltFwd','Sample.AltRev','FORMAT']
 
 class SampleAnnot:
     @staticmethod
@@ -36,10 +39,19 @@ class SampleAnnot:
 
     @staticmethod
     def first_value(v,fmt='{}'):
-        # caller's own FORMAT value; Number=A fields (Mutect2 AF) come back as a list
+        # caller's own FORMAT value; Number=A fields come back as a list
         if isinstance(v,(list,tuple)):
             v=v[0] if v else None
         return '.' if v is None else fmt.format(v)
+
+    @staticmethod
+    def format_string(data):
+        # sample column rebuilt from the parsed values, in FORMAT order (floats print as parsed: 1.000 -> 1.0)
+        def s(v):
+            if isinstance(v,(list,tuple)):
+                return ','.join(s(i) for i in v)
+            return '.' if v is None else str(v)
+        return ':'.join(s(v) for v in data.values())
 
     @staticmethod
     def ZYG_check(GT,AD):
@@ -70,17 +82,22 @@ class SampleAnnot:
             x=defaultdict(str)
             x['Sample.ID']=c['sample']
             x['Sample.Depth']=f"{c.get('DP',0)}"
-            # AF/GQ = caller's own FORMAT/AF and FORMAT/GQ (AF differs from our AltDepth/Depth AltFrac); '.' if absent
-            x['Sample.AF']=SampleAnnot.first_value(c.get('AF'),'{:.3f}')
-            x['Sample.GQ']=SampleAnnot.first_value(c.get('GQ'))
-            x['Sample.FAD']=SampleAnnot.ref_alt_counts(c.get('FAD'))
+            # AF = caller's own FORMAT/AF (differs from our AltDepth/Depth AltFrac); '.' if absent
+            x['Sample.AF']=SampleAnnot.first_value(c.get('AF'),'{:.4f}')
+            # Mutect2 only ('.' for VarDict)
             x['Sample.F1R2']=SampleAnnot.ref_alt_counts(c.get('F1R2'))
             x['Sample.F2R1']=SampleAnnot.ref_alt_counts(c.get('F2R1'))
+            # alt reads per strand: Mutect2 SB = [ref fwd, ref rev, alt fwd, alt rev]; VarDict ALD = [alt fwd, alt rev]
+            sb,ald=c.get('SB'),c.get('ALD')
+            is_list=lambda v,n: isinstance(v,(list,tuple)) and len(v)==n
+            alt=sb[2:] if is_list(sb,4) else ald if is_list(ald,2) else [None,None]
+            x['Sample.AltFwd'],x['Sample.AltRev']=(SampleAnnot.first_value(v) for v in alt)
+            x['FORMAT']=c.get('FORMAT','.')
             try:
                 ad=SampleAnnot.AD_check(c.get('AD',[0,0]))
                 x['Sample.AltDepth']=f"{ad[1]}"
                 dp=c.get('DP',0)
-                x['Sample.AltFrac']=f"{ad[1]/dp:.3f}" if dp else '.'
+                x['Sample.AltFrac']=f"{ad[1]/dp:.4f}" if dp else '.'
                 x['Sample.Zyg']=f"{SampleAnnot.ZYG_check(c.get('genotype','./.'),ad)}"
 
                 return x if x['Sample.Zyg'] not in ['.','HOM_REF'] else None
@@ -174,8 +191,7 @@ class TumorNormalAnnot:
                 except (ValueError,TypeError):
                     pass
 
-            #Handle zygosity
-            #Seems weird and overly complicated...
+            # uses vaf to determine zygosity 
             if x[f'{prefix}Zyg']=='.;.':
                 try:
                     if x[f'{prefix}AltFrac']!='.':
@@ -438,10 +454,11 @@ class VEPannotation(BasicInfoAnnot,MANEAnnot,GnomadAnnot,ClinvarAnnot,SpliceAIAn
                     'AD':[ref_depth,alt_depth],
                     # 'AF' is also picked up by __tumor_normal__ for Tumor/Normal.AltFrac (as in the archived parser)
                     'AF':call.data.get('AF'),
-                    'GQ':call.data.get('GQ'),
-                    'FAD':call.data.get('FAD'),
                     'F1R2':call.data.get('F1R2'),
-                    'F2R1':call.data.get('F2R1')
+                    'F2R1':call.data.get('F2R1'),
+                    'SB':call.data.get('SB'),
+                    'ALD':call.data.get('ALD'),
+                    'FORMAT':SampleAnnot.format_string(call.data)
                 })
             
             if tumor_normal:
@@ -492,8 +509,8 @@ def report_header(tumor_normal=False,no_caller=False):
         header+=['Tumor.Zyg','Tumor.Depth','Tumor.AltDepth','Tumor.AltFrac',
                 'Normal.Zyg','Normal.Depth','Normal.AltDepth','Normal.AltFrac']
     else:
-        header+=['Sample.Zyg','Sample.Depth','Sample.AltDepth','Sample.AltFrac','Sample.AF','Sample.GQ',
-                'Sample.FAD','Sample.F1R2','Sample.F2R1']
+        header+=['Sample.Zyg','Sample.Depth','Sample.AltDepth','Sample.AltFrac','Sample.AF',
+                *FORMAT_COLS]
 
     # All additional annotations
     header+=['AutoGVP',  # AutoGVP
@@ -674,7 +691,7 @@ def main(argv=None):
     header=report_header(tumor_normal,args.no_caller)
 
     if args.mode=='no_sample':
-        for x in ['Sample.ID','Sample.Zyg','Sample.Depth','Sample.AltDepth','Sample.AltFrac','Sample.AF','Sample.GQ','Sample.FAD','Sample.F1R2','Sample.F2R1']:
+        for x in ['Sample.ID','Sample.Zyg','Sample.Depth','Sample.AltDepth','Sample.AltFrac','Sample.AF',*FORMAT_COLS]:
             header.remove(x)
 
     #I did it like this simply to control the column order
