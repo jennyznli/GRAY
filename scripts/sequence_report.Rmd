@@ -1,0 +1,167 @@
+---
+title: "Gray Pre-Cancer Atlas: sequence-level filtering"
+author: "Jenny Li"
+output:
+  html_document:
+    theme: paper
+    toc: true
+    toc_float:
+      collapsed: false
+date: "`r Sys.Date()`"
+params:
+  dir: "filter"                      # {dir}/{caller}/sequence.csv + sequence_removed.csv (absolute path when rendering)
+  callers: "mutect2_no_pon,vardict"
+  min_ad_snv: 5
+  min_ad_indel: 10
+  strand_min: 0.1
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width = 11, fig.height = 4.5)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(data.table)
+library(knitr)
+
+CALLERS <- trimws(strsplit(params$callers, ",")[[1]])
+num <- function(x) suppressWarnings(as.numeric(x))
+read_caller <- function(file) bind_rows(lapply(CALLERS, function(cl) {
+  d <- fread(file.path(params$dir, cl, file), colClasses = "character", na.strings = NULL)
+  d$caller <- cl
+  d
+})) %>% mutate(caller = factor(caller, levels = CALLERS))
+
+kept <- read_caller("sequence.csv") %>%
+  mutate(depth = num(Sample.Depth), alt_depth = num(Sample.AltDepth), vaf = alt_depth / depth,
+         fwd = num(Sample.AltFwd), rev = num(Sample.AltRev), fwd_frac = fwd / (fwd + rev),
+         class = ifelse(nchar(REF) == nchar(ALT), "SNV / MNV", "indel"))
+removed <- read_caller("sequence_removed.csv")
+STEPS <- sort(unique(removed$removed_at))
+theme_set(theme_bw(base_size = 12))
+pct <- function(x) round(100 * x, 1)
+```
+
+Rows = one call (sample + variant) from one caller. Steps remove rows; `pass_minad` and `pass_strand` only flag them.
+
+# Rows removed at each step
+
+```{r funnel}
+n_removed <- removed %>% count(caller, step = removed_at) %>% complete(caller, step = STEPS, fill = list(n = 0))
+n_input <- bind_rows(count(kept, caller), count(removed, caller)) %>% count(caller, wt = n, name = "input")
+funnel <- n_removed %>% arrange(caller, step) %>% left_join(n_input, by = "caller") %>%
+  group_by(caller) %>%
+  mutate(rows_left = input - cumsum(n), pct_of_input_removed = pct(n / input)) %>% ungroup() %>%
+  select(caller, step, removed = n, pct_of_input_removed, rows_left, input)
+kable(funnel, format.args = list(big.mark = ","))
+
+ggplot(funnel, aes(step, removed, fill = caller)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = NULL, y = "rows removed", fill = NULL)
+```
+
+# Flags on the rows that are left
+
+```{r flags}
+kept %>% group_by(caller, class) %>%
+  summarise(rows = n(),
+            pct_pass_minad = pct(mean(pass_minad == "TRUE")),
+            pct_pass_strand = pct(mean(pass_strand == "TRUE")),
+            pct_strand_NA = pct(mean(pass_strand == "NA")),
+            pct_pass_both = pct(mean(pass_minad == "TRUE" & pass_strand == "TRUE")),
+            pct_FILTER_PASS = pct(mean(FILTER == "PASS")), .groups = "drop") %>%
+  kable(format.args = list(big.mark = ","))
+
+kept %>% count(caller, pass_minad, pass_strand) %>%
+  group_by(caller) %>% mutate(pct = pct(n / sum(n))) %>% ungroup() %>%
+  kable(format.args = list(big.mark = ","))
+```
+
+# Alt depth
+
+Dashed lines = `pass_minad` cutoffs (`r params$min_ad_snv` SNV / MNV, `r params$min_ad_indel` indel).
+
+```{r alt-depth, fig.height=5}
+cuts <- data.frame(class = c("SNV / MNV", "indel"), cut = c(params$min_ad_snv, params$min_ad_indel))
+ggplot(filter(kept, alt_depth > 0), aes(alt_depth, fill = pass_minad)) +
+  geom_histogram(bins = 60) +
+  geom_vline(data = cuts, aes(xintercept = cut), linetype = "dashed") +
+  facet_grid(caller ~ class, scales = "free_y") +
+  scale_x_log10() + scale_y_continuous(labels = scales::comma) +
+  scale_fill_manual(values = c("TRUE" = "grey45", "FALSE" = "#D95F0E")) +
+  labs(x = "alt depth", y = "rows")
+```
+
+```{r alt-depth-low}
+kept %>% filter(alt_depth <= 20) %>% count(caller, class, alt_depth) %>%
+  ggplot(aes(alt_depth, n, fill = class)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~caller, scales = "free_y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "alt depth (<= 20)", y = "rows", fill = NULL)
+```
+
+# Strand
+
+Alt forward fraction = `Sample.AltFwd` / (AltFwd + AltRev); dashed lines = `r params$strand_min` and `r 1 - params$strand_min`.
+
+```{r strand}
+if (any(!is.na(kept$fwd_frac))) {
+  ggplot(filter(kept, !is.na(fwd_frac)), aes(fwd_frac, fill = pass_strand)) +
+    geom_histogram(bins = 50) +
+    geom_vline(xintercept = c(params$strand_min, 1 - params$strand_min), linetype = "dashed") +
+    facet_wrap(~caller, scales = "free_y") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_fill_manual(values = c("TRUE" = "grey45", "FALSE" = "#D95F0E", "NA" = "grey80")) +
+    labs(x = "alt forward fraction", y = "rows")
+} else cat("No strand counts in these files (re-parse needed).")
+```
+
+```{r strand-vaf}
+if (any(!is.na(kept$fwd_frac))) {
+  kept %>% filter(pass_strand != "NA") %>%
+    mutate(vaf_bin = cut(vaf, c(0, 0.01, 0.05, 0.35, 1), include.lowest = TRUE)) %>%
+    group_by(caller, vaf_bin) %>%
+    summarise(rows = n(), pct_fail_strand = pct(mean(pass_strand == "FALSE")),
+              pct_fail_minad = pct(mean(pass_minad == "FALSE")), .groups = "drop") %>%
+    kable(format.args = list(big.mark = ","))
+}
+```
+
+# Depth and VAF
+
+```{r depth-vaf, fig.height=6}
+kept %>% select(caller, Depth = depth, VAF = vaf) %>%
+  pivot_longer(-caller, names_to = "measure") %>% filter(value > 0) %>%
+  ggplot(aes(value, colour = caller)) +
+  geom_density(linewidth = 0.8) +
+  facet_wrap(~measure, ncol = 1, scales = "free") +
+  scale_x_log10() +
+  labs(x = NULL, y = "density", colour = NULL)
+```
+
+# Caller FILTER tags
+
+```{r tags, fig.height=6}
+tags <- kept %>% select(caller, FILTER) %>%
+  mutate(tag = strsplit(FILTER, ";")) %>% unnest(tag) %>%
+  count(caller, tag) %>% left_join(count(kept, caller, name = "rows"), by = "caller") %>%
+  mutate(pct = 100 * n / rows)
+ggplot(tags, aes(pct, reorder(tag, pct))) +
+  geom_col() +
+  facet_wrap(~caller, scales = "free") +
+  labs(x = "% of rows carrying the tag", y = NULL)
+```
+
+# Per sample
+
+```{r per-sample}
+kept %>% group_by(caller, Sample.ID) %>%
+  summarise(rows = n(), pass_both = sum(pass_minad == "TRUE" & pass_strand == "TRUE"), .groups = "drop") %>%
+  pivot_longer(c(rows, pass_both)) %>%
+  ggplot(aes(name, value, fill = caller)) +
+  geom_boxplot(outlier.size = 0.6) +
+  scale_y_log10(labels = scales::comma) +
+  labs(x = NULL, y = "rows per sample", fill = NULL)
+```

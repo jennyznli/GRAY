@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+#BSUB -J somatic_filter_report
+#BSUB -q knmkln_normal
+#BSUB -o /project/knathans_tecac/jenny/29-gray/logs/somatic_filter_report.%J.out
+#BSUB -e /project/knathans_tecac/jenny/29-gray/logs/somatic_filter_report.%J.err
+#BSUB -n 1
+#BSUB -R "rusage[mem=32000]"
+#BSUB -M 32000
+
+# Renders the somatic filter reports, every caller side by side (needs scripts/somatic_filter.bsub run first):
+#   basic       scripts/basic_filter_report.Rmd    -> reports/basic_filter_report.html    (stage 1: 01-07)
+#   recurrent   scripts/recurrent_filter_report.Rmd   -> reports/recurrent_filter_report.html   (stage 2: 08)
+#   annotation  scripts/annotation_filter_report.Rmd  -> reports/annotation_filter_report.html  (stage 3: 09 + caller intersection)
+#   regression  scripts/caller_regression_report.Rmd  -> reports/caller_regression_report.html  (per-sample concordance)
+# A report skips callers that lack the stages it needs (warning), so you can render whatever has finished.
+# somatic_filter_common.R + caller_concordance.R must sit next to the Rmds in scripts/.
+#
+# Run from the 29-gray working dir on LPC:
+#   bsub < scripts/somatic_filter_report.bsub                                   # all four
+#   REPORTS="recurrent annotation" bsub < scripts/somatic_filter_report.bsub    # after redoing 08 + 09 only
+#   CONFIG=config/chip_filter.yaml REPORT_DIR=reports/chip bsub < scripts/somatic_filter_report.bsub
+#     (callers + labels come from the config's callers: block; one caller = overlap / intersection skipped)
+# rmarkdown::render() needs pandoc >= 2.8; LPC's default is older, so point at the conda one:
+#   PANDOC_DIR=/home/jennyzli/.conda/envs/pandoc/bin bsub < scripts/somatic_filter_report.bsub
+set -euo pipefail
+
+REPORTS="${REPORTS:-basic recurrent annotation regression}"
+CONFIG="${CONFIG:-config/somatic_filter.yaml}"     # callers: = which callers + labels; report: = plot thresholds
+OUTDIR="$PWD/${REPORT_DIR:-reports}"               # e.g. REPORT_DIR=reports/chip for a separate CHIP config
+mkdir -p "$OUTDIR/render_tmp"
+[ -s "$CONFIG" ] || { echo "ERROR: $CONFIG not found"; exit 1; }
+CONFIG_ABS="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
+
+# callers in the config whose outputs exist, in config order (absolute paths: render() resolves relative
+# paths against the Rmd's own dir)
+MANIFEST="$OUTDIR/somatic_filter_manifest.tsv"
+N_CALLERS=$(Rscript scripts/somatic_filter_manifest.R "$CONFIG_ABS" "$PWD" "$MANIFEST")
+echo "== manifest ($N_CALLERS caller(s)):"; cat "$MANIFEST"
+# per-sample caller-vs-caller regression needs 2+ callers
+if [ "$N_CALLERS" -lt 2 ] && [[ " $REPORTS " == *" regression "* ]]; then
+    echo "NOTE: one caller -- skipping the regression report"
+    REPORTS="$(echo " $REPORTS " | sed 's/ regression / /' | xargs)"
+fi
+
+declare -A RMD=([basic]=basic_filter_report [recurrent]=recurrent_filter_report
+                [annotation]=annotation_filter_report [regression]=caller_regression_report)
+for r in $REPORTS; do
+    [ -n "${RMD[$r]:-}" ] || { echo "ERROR: unknown report '$r' (basic / recurrent / annotation / regression)"; exit 1; }
+done
+
+[ -n "${PANDOC_DIR:-}" ] && export RSTUDIO_PANDOC="$PANDOC_DIR"
+echo "== $(Rscript --version 2>&1)"
+
+{
+    cat <<EOF2
+v <- rmarkdown::pandoc_version()
+cat("== pandoc:", as.character(v), "\n")
+if (!rmarkdown::pandoc_available("2.8"))
+    stop("rmarkdown::render() needs pandoc >= 2.8 -- set PANDOC_DIR (see header of somatic_filter_report.bsub)")
+EOF2
+    for r in $REPORTS; do
+        cat <<EOF2
+rmarkdown::render("$PWD/scripts/${RMD[$r]}.Rmd",
+                  params            = list(manifest = "$MANIFEST", config = "$CONFIG_ABS"),
+                  output_file       = "$OUTDIR/${RMD[$r]}.html",
+                  intermediates_dir = "$OUTDIR/render_tmp",
+                  knit_root_dir     = "$OUTDIR/render_tmp")
+EOF2
+    done
+} > "$OUTDIR/render_tmp/render.R"
+Rscript "$OUTDIR/render_tmp/render.R"
+for r in $REPORTS; do echo "== $OUTDIR/${RMD[$r]}.html written"; done

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#BSUB -J somatic_filter
+#BSUB -q knmkln_normal
+#BSUB -o /project/knathans_tecac/jenny/29-gray/logs/somatic_filter.%J.out
+#BSUB -e /project/knathans_tecac/jenny/29-gray/logs/somatic_filter.%J.err
+#BSUB -n 1
+#BSUB -R "rusage[mem=16000]"
+#BSUB -M 16000
+
+# 3-stage somatic call filter on one caller's merged VEP csv, BEFORE oncokb_annotate.py:
+#   basic      scripts/basic_filter.py       01-07  -> PREFIX.basic_filtered.csv
+#   recurrent  scripts/recurrent_filter.py   08     -> PREFIX.recurrent_filtered.csv
+#   annotation scripts/annotation_filter.py  09a-c  -> PREFIX.annotation_filtered.csv  (OncoKB input)
+# Thresholds, gnomAD cols, gene + protected lists and inputs all live in config/somatic_filter.yaml.
+#
+# Run from the 29-gray working dir on LPC (CALLER = a key under `callers:` in the config):
+#   CALLER=vardict        bsub < scripts/somatic_filter.bsub
+#   CALLER=mutect2_no_pon bsub < scripts/somatic_filter.bsub
+#   CALLER=mutect2_pon    bsub < scripts/somatic_filter.bsub
+# Only redo 08 + 09 (e.g. after changing the recurrent thresholds) -- stages run in the order given:
+#   CALLER=vardict STAGES="recurrent annotation" bsub < scripts/somatic_filter.bsub
+# One-off override without editing the config -- EXTRA_ARGS goes to EVERY stage in STAGES and a stage
+# errors on a flag it doesn't have, so pair it w/ the one stage that owns the flag (+ rerun the later ones):
+#   CALLER=vardict STAGES=annotation EXTRA_ARGS="--gnomad-max-af 0.01" bsub < scripts/somatic_filter.bsub
+# Then OncoKB on the final csv:
+#   python scripts/oncokb_annotate.py -i vardict/all_samples.vardict.vep.annotation_filtered.csv \
+#       -o vardict/all_samples.vardict.vep.annotation_filtered.oncokb.csv --cache oncokb/cache.GRCh38.tsv --tumor-type BRCA
+set -euo pipefail
+
+CALLER="${CALLER:?set CALLER=vardict, mutect2_no_pon or mutect2_pon}"
+CONFIG="${CONFIG:-config/somatic_filter.yaml}"
+STAGES="${STAGES:-basic recurrent annotation}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
+
+[ -s "$CONFIG" ] || { echo "ERROR: $CONFIG not found"; exit 1; }
+for s in $STAGES; do
+    case "$s" in basic|recurrent|annotation) ;; *) echo "ERROR: unknown stage '$s' (basic / recurrent / annotation)"; exit 1 ;; esac
+done
+
+# conda's activate scripts reference unset vars, which set -u turns into a hard exit
+set +u
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate vep_parser
+set -u
+
+declare -A SCRIPT=([basic]=basic_filter.py [recurrent]=recurrent_filter.py [annotation]=annotation_filter.py)
+for s in $STAGES; do
+    echo "== stage $s  caller=$CALLER  config=$CONFIG  $EXTRA_ARGS"
+    python "scripts/${SCRIPT[$s]}" --config "$CONFIG" --caller "$CALLER" $EXTRA_ARGS
+    echo
+done

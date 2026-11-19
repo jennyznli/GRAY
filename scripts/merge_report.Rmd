@@ -1,0 +1,123 @@
+---
+title: "Gray Pre-Cancer Atlas: merged Mutect2 + VarDict calls"
+author: "Jenny Li"
+output:
+  html_document:
+    theme: paper
+    toc: true
+    toc_float:
+      collapsed: false
+date: "`r Sys.Date()`"
+params:
+  merged: "filter/merged.csv"              # merge.py kept calls (absolute path when rendering)
+  removed: "filter/merged_removed.csv"     # merge.py removed calls
+  out_dir: "filter"                        # caller-only csvs are written here
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width = 11, fig.height = 4.5)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(data.table)
+library(knitr)
+
+num_cols <- c("Sample.Depth", "Sample.AltDepth", "Sample.AltFrac",
+              "Mutect2.Depth", "Mutect2.AltDepth", "Mutect2.AltFrac",
+              "VarDict.Depth", "VarDict.AltDepth", "VarDict.AltFrac")
+read_calls <- function(path, status) {
+  d <- fread(path, colClasses = "character", na.strings = NULL)
+  for (c in intersect(num_cols, names(d))) set(d, j = c, value = suppressWarnings(as.numeric(d[[c]])))
+  d$status <- status
+  d
+}
+SOURCES <- c("Mutect2;VarDict" = "both", "Mutect2" = "Mutect2 only", "VarDict" = "VarDict only")
+calls <- bind_rows(read_calls(params$merged, "kept"), read_calls(params$removed, "removed")) %>%
+  mutate(source = factor(SOURCES[callers], levels = SOURCES),
+         status = factor(status, levels = c("kept", "removed")))
+kept <- filter(calls, status == "kept")
+COLS <- c("both" = "grey35", "Mutect2 only" = "#2C7FB8", "VarDict only" = "#D95F0E")
+theme_set(theme_bw(base_size = 12))
+```
+
+Kept = at least one caller passes the FILTER rule, `pass_minad` and `pass_strand` (merge.py).
+Shared `Sample.Depth` / `Sample.AltDepth` / `Sample.AltFrac` are the mean over the callers that have the call.
+
+# Calls by caller
+
+```{r counts}
+tab <- calls %>% count(source, status) %>% pivot_wider(names_from = status, values_from = n, values_fill = 0)
+for (s in c("kept", "removed")) if (!s %in% names(tab)) tab[[s]] <- 0L
+tab <- tab %>% mutate(total = kept + removed, pct_kept = round(100 * kept / total, 1))
+kable(tab, format.args = list(big.mark = ","))
+
+ggplot(count(calls, source, status), aes(source, n, fill = status)) +
+  geom_col() +
+  scale_fill_manual(values = c(kept = "grey35", removed = "grey80")) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = NULL, y = "calls", fill = NULL)
+```
+
+```{r per-sample}
+kept %>% count(Sample.ID, source) %>%
+  ggplot(aes(source, n, fill = source)) +
+  geom_boxplot(outlier.size = 0.6, show.legend = FALSE) +
+  scale_fill_manual(values = COLS) +
+  scale_y_log10(labels = scales::comma) +
+  labs(x = NULL, y = "kept calls per sample")
+```
+
+# Depth, alt depth and VAF (kept calls)
+
+```{r dist-table}
+kept %>% group_by(source) %>%
+  summarise(calls = n(),
+            median_depth = median(Sample.Depth), median_alt_depth = median(Sample.AltDepth),
+            median_vaf = median(Sample.AltFrac),
+            pct_vaf_lt_0.01 = round(100 * mean(Sample.AltFrac < 0.01), 1),
+            pct_vaf_lt_0.05 = round(100 * mean(Sample.AltFrac < 0.05), 1)) %>%
+  kable(format.args = list(big.mark = ","), digits = 4)
+```
+
+```{r dist, fig.height=9}
+kept %>%
+  select(source, Depth = Sample.Depth, `Alt depth` = Sample.AltDepth, VAF = Sample.AltFrac) %>%
+  pivot_longer(-source, names_to = "measure") %>%
+  filter(value > 0) %>%
+  mutate(measure = factor(measure, levels = c("Depth", "Alt depth", "VAF"))) %>%
+  ggplot(aes(value, colour = source)) +
+  geom_density(linewidth = 0.8) +
+  facet_wrap(~measure, ncol = 1, scales = "free") +
+  scale_x_log10() +
+  scale_colour_manual(values = COLS) +
+  labs(x = NULL, y = "density", colour = NULL)
+```
+
+# Mutect2 vs VarDict (kept calls from both callers)
+
+```{r both, fig.height=4}
+both <- filter(kept, source == "both")
+bind_rows(
+  transmute(both, measure = "Depth", Mutect2 = Mutect2.Depth, VarDict = VarDict.Depth),
+  transmute(both, measure = "Alt depth", Mutect2 = Mutect2.AltDepth, VarDict = VarDict.AltDepth),
+  transmute(both, measure = "VAF", Mutect2 = Mutect2.AltFrac, VarDict = VarDict.AltFrac)) %>%
+  filter(Mutect2 > 0, VarDict > 0) %>%
+  mutate(measure = factor(measure, levels = c("Depth", "Alt depth", "VAF"))) %>%
+  ggplot(aes(Mutect2, VarDict)) +
+  geom_point(alpha = 0.1, size = 0.4) +
+  geom_abline(colour = "red", linewidth = 0.3) +
+  facet_wrap(~measure, scales = "free") +
+  scale_x_log10() + scale_y_log10()
+```
+
+# Caller-only files
+
+```{r write}
+out <- sapply(c("Mutect2", "VarDict"), function(cl) {
+  path <- file.path(params$out_dir, paste0("merged_", tolower(cl), "_only.csv"))
+  fwrite(select(filter(kept, callers == cl), -status, -source), path)
+  path
+})
+kable(data.frame(file = out, kept_calls = c(sum(kept$callers == "Mutect2"), sum(kept$callers == "VarDict")),
+                 row.names = NULL), format.args = list(big.mark = ","))
+```
